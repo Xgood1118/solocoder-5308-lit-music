@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Light Music Player</title>
+  <link rel="manifest" href="/manifest.json" />
+  <meta name="theme-color" content="#667eea" />
+  <link rel="icon" type="image/svg+xml" href="/icon.svg" />
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+
+    :root {
+      --bg-color: #f5f7fa;
+      --text-color: #333;
+      --text-secondary: #888;
+      --text-disabled: #bbb;
+      --border-color: #e9ecef;
+      --hover-bg: rgba(0, 0, 0, 0.06);
+      --selected-bg: rgba(102, 126, 234, 0.12);
+      --playing-bg: rgba(102, 126, 234, 0.2);
+      --primary-color: #667eea;
+      --primary-hover: #5568d3;
+      --danger-color: #e74c3c;
+
+      --controls-bg: #fff;
+      --playlist-bg: #fff;
+      --playlist-header-bg: #f8f9fa;
+      --lyrics-bg: #fff;
+      --lyrics-header-bg: #f8f9fa;
+      --modal-bg: #fff;
+      --input-bg: #fff;
+      --slider-bg: #ddd;
+      --scrollbar-color: #ddd;
+      --context-menu-bg: #fff;
+
+      --now-playing-bg: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    }
+
+    .theme-dark {
+      --bg-color: #1a1a2e;
+      --text-color: #e0e0e0;
+      --text-secondary: #999;
+      --text-disabled: #555;
+      --border-color: #2d2d44;
+      --hover-bg: rgba(255, 255, 255, 0.08);
+      --selected-bg: rgba(102, 126, 234, 0.2);
+      --playing-bg: rgba(102, 126, 234, 0.3);
+      --primary-color: #8b9cf5;
+      --primary-hover: #a8b6f8;
+      --danger-color: #ff6b6b;
+
+      --controls-bg: #16213e;
+      --playlist-bg: #16213e;
+      --playlist-header-bg: #0f3460;
+      --lyrics-bg: #16213e;
+      --lyrics-header-bg: #0f3460;
+      --modal-bg: #16213e;
+      --input-bg: #0f3460;
+      --slider-bg: #2d2d44;
+      --scrollbar-color: #3d3d5c;
+      --context-menu-bg: #16213e;
+
+      --now-playing-bg: linear-gradient(135deg, #4a569d 0%, #5d3a7a 100%);
+    }
+
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: var(--bg-color);
+      color: var(--text-color);
+      min-height: 100vh;
+      transition: background 0.3s, color 0.3s;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+
+    #app {
+      min-height: 100vh;
+    }
+
+    ::-webkit-scrollbar {
+      width: 8px;
+      height: 8px;
+    }
+
+    ::-webkit-scrollbar-track {
+      background: transparent;
+    }
+
+    ::-webkit-scrollbar-thumb {
+      background: var(--scrollbar-color);
+      border-radius: 4px;
+    }
+
+    ::-webkit-scrollbar-thumb:hover {
+      background: var(--text-secondary);
+    }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <music-player></music-player>
+  </div>
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
