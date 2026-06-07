@@ -170,8 +170,24 @@ const LS_KEYS = {
   THEME: 'lit-music-theme',
   LAST_SONG: 'lit-music-last-song',
   CURRENT_PLAYLIST: 'lit-music-current-playlist',
-  LYRICS_CACHE: 'lit-music-lyrics-'
+  LYRICS_CACHE: 'lit-music-lyrics-',
+  ROLE: 'lit-music-role',
+  SUBSCRIBED: 'lit-music-subscribed',
+  CHILD_PIN: 'lit-music-child-pin',
+  GUEST_START_TIME: 'lit-music-guest-start',
+  LAST_MONTHLY_REPORT: 'lit-music-last-monthly-report'
 };
+
+export const ROLES = {
+  ADMIN: 'admin',
+  USER: 'user',
+  GUEST: 'guest',
+  CHILD: 'child'
+};
+
+export const FREE_QUOTA = 200;
+export const CHILD_VOLUME_LIMIT = 0.6;
+export const GUEST_TIMEOUT = 30 * 60 * 1000;
 
 export function getVolume() {
   const v = localStorage.getItem(LS_KEYS.VOLUME);
@@ -246,4 +262,96 @@ export function getLyricsCache(songId) {
 
 export function setLyricsCache(songId, lyrics) {
   localStorage.setItem(LS_KEYS.LYRICS_CACHE + songId, JSON.stringify(lyrics));
+}
+
+export function getRole() {
+  return localStorage.getItem(LS_KEYS.ROLE) || ROLES.ADMIN;
+}
+
+export function setRole(role) {
+  localStorage.setItem(LS_KEYS.ROLE, role);
+  if (role === ROLES.GUEST) {
+    localStorage.setItem(LS_KEYS.GUEST_START_TIME, String(Date.now()));
+  }
+}
+
+export function getSubscribed() {
+  return localStorage.getItem(LS_KEYS.SUBSCRIBED) === 'true';
+}
+
+export function setSubscribed(subscribed) {
+  localStorage.setItem(LS_KEYS.SUBSCRIBED, String(subscribed));
+}
+
+export function getChildPin() {
+  return localStorage.getItem(LS_KEYS.CHILD_PIN) || '';
+}
+
+export function setChildPin(pin) {
+  localStorage.setItem(LS_KEYS.CHILD_PIN, pin);
+}
+
+export function getGuestStartTime() {
+  const t = localStorage.getItem(LS_KEYS.GUEST_START_TIME);
+  return t ? parseInt(t, 10) : 0;
+}
+
+export function getLastMonthlyReport() {
+  const t = localStorage.getItem(LS_KEYS.LAST_MONTHLY_REPORT);
+  return t ? parseInt(t, 10) : 0;
+}
+
+export function setLastMonthlyReport(time) {
+  localStorage.setItem(LS_KEYS.LAST_MONTHLY_REPORT, String(time));
+}
+
+export async function getHistoryByDateRange(startTime, endTime) {
+  const allHistory = await storage.getRecentHistory(10000);
+  return allHistory.filter(h => h.timestamp >= startTime && h.timestamp <= endTime);
+}
+
+export async function getMonthlyReport(year, month) {
+  const startOfMonth = new Date(year, month, 1).getTime();
+  const endOfMonth = new Date(year, month + 1, 0, 23, 59, 59).getTime();
+  const history = await getHistoryByDateRange(startOfMonth, endOfMonth);
+  
+  const totalPlays = history.length;
+  let totalDuration = 0;
+  const artistPlays = {};
+  const songPlays = {};
+  const hourlyDistribution = new Array(24).fill(0);
+  const firstTimeSongs = new Set();
+  const allSongIds = new Set();
+
+  for (const entry of history) {
+    totalDuration += entry.duration || 0;
+    if (entry.artist) {
+      artistPlays[entry.artist] = (artistPlays[entry.artist] || 0) + 1;
+    }
+    if (entry.songId) {
+      if (!allSongIds.has(entry.songId)) {
+        firstTimeSongs.add(entry.songId);
+      }
+      allSongIds.add(entry.songId);
+      songPlays[entry.songId] = (songPlays[entry.songId] || 0) + 1;
+    }
+    const hour = new Date(entry.timestamp).getHours();
+    hourlyDistribution[hour]++;
+  }
+
+  const topArtists = Object.entries(artistPlays)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5)
+    .map(([name, count]) => ({ name, count }));
+
+  return {
+    year,
+    month,
+    totalPlays,
+    totalDuration,
+    topArtists,
+    hourlyDistribution,
+    newSongsCount: firstTimeSongs.size,
+    uniqueSongs: allSongIds.size
+  };
 }

@@ -4,6 +4,9 @@ import {
   getLoopMode, setLoopMode, getShuffle, setShuffle,
   getLastSong, setLastSong, getLyricsCache, setLyricsCache,
   getCurrentPlaylistId, setCurrentPlaylistId,
+  getRole, setRole, getSubscribed, setSubscribed,
+  getMonthlyReport, getLastMonthlyReport, setLastMonthlyReport,
+  ROLES, FREE_QUOTA, CHILD_VOLUME_LIMIT,
   storage, generateId, shuffleArray, debounce
 } from '../utils/all-utils.js';
 import { parseLRC } from '../utils/lrc-parser.js';
@@ -12,6 +15,8 @@ import './now-playing.js';
 import './player-controls.js';
 import './playlist-component.js';
 import './lyrics-component.js';
+import './settings-panel.js';
+import './monthly-report.js';
 
 class MusicPlayer extends LitElement {
   static properties = {
@@ -34,7 +39,13 @@ class MusicPlayer extends LitElement {
     userStopped: { type: Boolean },
     showMetadata: { type: Boolean },
     metadataSong: { type: Object },
-    autoplayBlocked: { type: Boolean }
+    autoplayBlocked: { type: Boolean },
+    role: { type: String },
+    subscribed: { type: Boolean },
+    showSettings: { type: Boolean },
+    showMonthlyReport: { type: Boolean },
+    monthlyReportData: { type: Object },
+    showQuotaWarning: { type: Boolean }
   };
 
   static styles = css`
@@ -178,6 +189,103 @@ class MusicPlayer extends LitElement {
       color: var(--text-color, #333);
     }
 
+    .role-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 4px 10px;
+      background: var(--primary-color, #667eea);
+      color: #fff;
+      border-radius: 20px;
+      font-size: 12px;
+      font-weight: 500;
+    }
+
+    .role-badge.guest {
+      background: #95a5a6;
+    }
+
+    .role-badge.child {
+      background: #f39c12;
+    }
+
+    .role-badge.user {
+      background: #3498db;
+    }
+
+    .quota-warning-banner {
+      background: #fff3cd;
+      color: #856404;
+      padding: 10px 16px;
+      border-radius: 8px;
+      font-size: 13px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .quota-warning-banner button {
+      background: #ffc107;
+      border: none;
+      padding: 4px 10px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 12px;
+      color: #856404;
+      font-weight: 500;
+    }
+
+    .top-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 8px;
+    }
+
+    .top-bar-left {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .app-title {
+      font-size: 18px;
+      font-weight: 700;
+      background: linear-gradient(135deg, #667eea, #764ba2);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      margin: 0;
+    }
+
+    .top-bar-right {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .icon-btn {
+      background: none;
+      border: none;
+      cursor: pointer;
+      padding: 8px;
+      border-radius: 50%;
+      color: var(--text-color, #333);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: background 0.2s;
+    }
+
+    .icon-btn:hover {
+      background: var(--hover-bg, rgba(0, 0, 0, 0.1));
+    }
+
+    .icon-btn svg {
+      width: 20px;
+      height: 20px;
+    }
+
     @media (max-width: 768px) {
       .main-content {
         grid-template-columns: 1fr;
@@ -207,14 +315,23 @@ class MusicPlayer extends LitElement {
     this.showMetadata = false;
     this.metadataSong = null;
     this.autoplayBlocked = false;
+    this.role = getRole();
+    this.subscribed = getSubscribed();
+    this.showSettings = false;
+    this.showMonthlyReport = false;
+    this.monthlyReportData = null;
+    this.showQuotaWarning = false;
     this._audio = null;
     this._debouncedSetCurrentTime = null;
     this._saveProgressTimer = null;
+    this._guestTimer = null;
+    this._monthlyCheckTimer = null;
+    this._lastPlayStartTime = 0;
   }
 
   firstUpdated() {
     this._audio = new Audio();
-    this._audio.volume = this.muted ? 0 : this.volume;
+    this._applyVolumeLimits();
 
     this._audio.addEventListener('timeupdate', () => {
       this.currentTime = this._audio.currentTime;
@@ -227,20 +344,28 @@ class MusicPlayer extends LitElement {
       }
     });
 
-    this._audio.addEventListener('ended', () => {
-      if (!this.userStopped) {
-        this._onSongEnded();
-      }
-      this.userStopped = false;
-    });
-
     this._audio.addEventListener('play', () => {
       this.isPlaying = true;
       this.autoplayBlocked = false;
+      this._lastPlayStartTime = Date.now();
     });
 
     this._audio.addEventListener('pause', () => {
       this.isPlaying = false;
+      if (this.currentSong && this._lastPlayStartTime > 0) {
+        this._recordPlayHistory(false);
+      }
+    });
+
+    this._audio.addEventListener('ended', () => {
+      if (!this.userStopped) {
+        this._recordPlayHistory(true);
+        this._onSongEnded();
+      } else {
+        this._recordPlayHistory(false);
+      }
+      this.userStopped = false;
+      this._lastPlayStartTime = 0;
     });
 
     this._audio.addEventListener('error', () => {
@@ -255,9 +380,11 @@ class MusicPlayer extends LitElement {
     this._loadPlaylists();
     this._loadSongs();
     this._restoreLastPlayed();
+    this._applyRoleRestrictions();
+    this._checkMonthlyReport();
 
     document.addEventListener('visibilitychange', () => {
-      // 页面切换时音频继续播放（不做任何暂停操作）
+      // 页面切换时音频继续播放
     });
 
     this._saveProgressTimer = setInterval(() => {
@@ -265,12 +392,22 @@ class MusicPlayer extends LitElement {
         setLastSong(this.currentSong.id, this.currentTime);
       }
     }, 5000);
+
+    this._monthlyCheckTimer = setInterval(() => {
+      this._checkMonthlyReport();
+    }, 60 * 60 * 1000);
   }
 
   disconnectedCallback() {
     super.disconnectedCallback();
     if (this._saveProgressTimer) {
       clearInterval(this._saveProgressTimer);
+    }
+    if (this._guestTimer) {
+      clearTimeout(this._guestTimer);
+    }
+    if (this._monthlyCheckTimer) {
+      clearInterval(this._monthlyCheckTimer);
     }
     if (this.currentSong) {
       setLastSong(this.currentSong.id, this.currentTime);
@@ -330,20 +467,61 @@ class MusicPlayer extends LitElement {
   }
 
   render() {
+    const roleLabels = {
+      [ROLES.ADMIN]: '管理员',
+      [ROLES.USER]: '普通用户',
+      [ROLES.GUEST]: '访客',
+      [ROLES.CHILD]: '儿童模式'
+    };
+
     return html`
       <div class="player-wrapper">
-        <div class="settings-bar">
-          <button class="theme-btn" @click="${this._toggleLyrics}" title="${this.showLyrics ? '隐藏歌词' : '显示歌词'}">
-            <svg viewBox="0 0 24 24" fill="currentColor">
-              <path d="M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z"/>
-            </svg>
-          </button>
-          <button class="theme-btn" @click="${this._cycleTheme}" title="切换主题">
-            <svg viewBox="0 0 24 24" fill="currentColor">
-              <path d="M12 3c-4.97 0-9 4.03-9 9s4.03 9 9 9 9-4.03 9-9c0-.46-.04-.92-.1-1.36-.98 1.37-2.58 2.26-4.4 2.26-2.98 0-5.4-2.42-5.4-5.4 0-1.81.89-3.42 2.26-4.4-.44-.06-.9-.1-1.36-.1z"/>
-            </svg>
-          </button>
+        <div class="top-bar">
+          <div class="top-bar-left">
+            <h1 class="app-title">🎵 Lit Music</h1>
+            <span class="role-badge ${this.role}">
+              ${this.role === ROLES.ADMIN ? '👑' : ''}
+              ${this.role === ROLES.USER ? '👤' : ''}
+              ${this.role === ROLES.GUEST ? '👥' : ''}
+              ${this.role === ROLES.CHILD ? '🧒' : ''}
+              ${roleLabels[this.role]}
+            </span>
+            ${!this.subscribed ? html`
+              <span style="font-size: 11px; color: var(--text-secondary);">
+                ${this.songs.length}/${FREE_QUOTA} 首
+              </span>
+            ` : ''}
+          </div>
+          <div class="top-bar-right">
+            <button class="icon-btn" @click="${this._openMonthlyReport}" title="月度报告">
+              <svg viewBox="0 0 24 24" fill="currentColor">
+                <path d="M19 3h-1V1h-2v2H8V1H6v2H5c-1.11 0-1.99.9-1.99 2L3 19c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H5V8h14v11zM9 10H7v2h2v-2zm4 0h-2v2h2v-2zm4 0h-2v2h2v-2zm-8 4H7v2h2v-2zm4 0h-2v2h2v-2zm4 0h-2v2h2v-2z"/>
+              </svg>
+            </button>
+            <button class="icon-btn" @click="${this._toggleLyrics}" title="${this.showLyrics ? '隐藏歌词' : '显示歌词'}">
+              <svg viewBox="0 0 24 24" fill="currentColor">
+                <path d="M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z"/>
+              </svg>
+            </button>
+            <button class="icon-btn" @click="${this._cycleTheme}" title="切换主题">
+              <svg viewBox="0 0 24 24" fill="currentColor">
+                <path d="M12 3c-4.97 0-9 4.03-9 9s4.03 9 9 9 9-4.03 9-9c0-.46-.04-.92-.1-1.36-.98 1.37-2.58 2.26-4.4 2.26-2.98 0-5.4-2.42-5.4-5.4 0-1.81.89-3.42 2.26-4.4-.44-.06-.9-.1-1.36-.1z"/>
+              </svg>
+            </button>
+            <button class="icon-btn" @click="${this._openSettings}" title="设置">
+              <svg viewBox="0 0 24 24" fill="currentColor">
+                <path d="M19.14 12.94c.04-.31.06-.63.06-.94 0-.31-.02-.63-.06-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/>
+              </svg>
+            </button>
+          </div>
         </div>
+
+        ${this.showQuotaWarning ? html`
+          <div class="quota-warning-banner">
+            <span>⚠️ 已达免费版上限（${FREE_QUOTA} 首），升级订阅版解锁无限歌曲</span>
+            <button @click="${this._openSettings}">升级</button>
+          </div>
+        ` : ''}
 
         ${this.autoplayBlocked ? html`
           <div class="autoplay-warning">
@@ -385,6 +563,7 @@ class MusicPlayer extends LitElement {
             .playlists="${this.playlists}"
             .currentPlaylistId="${this.currentPlaylistId}"
             .selectedIndexes="${[]}"
+            .canAddSongs="${this._canAddSongs()}"
             @songs-added="${this._onSongsAdded}"
             @play-song="${this._onPlaySong}"
             @remove-songs="${this._onRemoveSongs}"
@@ -447,6 +626,20 @@ class MusicPlayer extends LitElement {
             </div>
           </div>
         ` : ''}
+
+        <settings-panel
+          .visible="${this.showSettings}"
+          .songCount="${this.songs.length}"
+          @close="${this._closeSettings}"
+          @role-change="${this._onRoleChange}"
+          @subscribe-change="${this._onSubscribeChange}"
+        ></settings-panel>
+
+        <monthly-report
+          .visible="${this.showMonthlyReport}"
+          .report="${this.monthlyReportData}"
+          @close="${this._closeMonthlyReport}"
+        ></monthly-report>
       </div>
     `;
   }
@@ -814,6 +1007,183 @@ class MusicPlayer extends LitElement {
 
   _dismissAutoplayWarning() {
     this.autoplayBlocked = false;
+  }
+
+  _openSettings() {
+    this.showSettings = true;
+  }
+
+  _closeSettings() {
+    this.showSettings = false;
+  }
+
+  _onRoleChange(e) {
+    const { role } = e.detail;
+    this.role = role;
+    setRole(role);
+    this._applyRoleRestrictions();
+    this._applyVolumeLimits();
+  }
+
+  _onSubscribeChange(e) {
+    const { subscribed } = e.detail;
+    this.subscribed = subscribed;
+    setSubscribed(subscribed);
+    if (subscribed) {
+      this.showQuotaWarning = false;
+    } else {
+      this._checkQuota();
+    }
+  }
+
+  _applyRoleRestrictions() {
+    if (this.role === ROLES.GUEST) {
+      if (this._guestTimer) clearTimeout(this._guestTimer);
+      this._guestTimer = setTimeout(() => {
+        alert('访客会话已过期（30分钟）');
+        setRole(ROLES.ADMIN);
+        this.role = ROLES.ADMIN;
+        this._applyRoleRestrictions();
+      }, 30 * 60 * 1000);
+    }
+
+    if (this.role === ROLES.CHILD) {
+      this._audio.volume = Math.min(this._audio.volume, CHILD_VOLUME_LIMIT);
+      this.volume = Math.min(this.volume, CHILD_VOLUME_LIMIT);
+      setVolume(this.volume);
+    }
+  }
+
+  _applyVolumeLimits() {
+    if (this.role === ROLES.CHILD) {
+      const limitedVol = Math.min(this.volume, CHILD_VOLUME_LIMIT);
+      this._audio.volume = this.muted ? 0 : limitedVol;
+    } else {
+      this._audio.volume = this.muted ? 0 : this.volume;
+    }
+  }
+
+  _canAddSongs() {
+    if (this.subscribed) return true;
+    if (this.role === ROLES.GUEST) return false;
+    return this.songs.length < FREE_QUOTA;
+  }
+
+  _checkQuota() {
+    if (this.subscribed) return;
+    if (this.songs.length >= FREE_QUOTA) {
+      this.showQuotaWarning = true;
+    }
+  }
+
+  _onSongsAdded(e) {
+    const { songs } = e.detail;
+
+    if (!this.subscribed && this.role !== ROLES.GUEST) {
+      const remaining = FREE_QUOTA - this.songs.length;
+      if (remaining <= 0) {
+        alert(`已达免费版上限（${FREE_QUOTA} 首），请升级订阅版或删除部分歌曲。`);
+        return;
+      }
+      if (songs.length > remaining) {
+        const allowedSongs = songs.slice(0, remaining);
+        const rejected = songs.length - remaining;
+        alert(`免费版还能添加 ${remaining} 首歌，已添加 ${remaining} 首，剩余 ${rejected} 首未添加。\n升级订阅版解锁无限歌曲。`);
+        this.songs = [...this.songs, ...allowedSongs];
+        this._saveCurrentPlaylist();
+        allowedSongs.forEach(s => storage.addSong(s));
+        this.showQuotaWarning = true;
+        return;
+      }
+      if (this.songs.length + songs.length >= FREE_QUOTA) {
+        this.showQuotaWarning = true;
+      }
+    }
+
+    if (this.role === ROLES.GUEST) {
+      alert('访客模式不能添加歌曲，请切换到其他角色。');
+      return;
+    }
+
+    this.songs = [...this.songs, ...songs];
+    this._saveCurrentPlaylist();
+    songs.forEach(s => storage.addSong(s));
+  }
+
+  _onVolumeChange(e) {
+    const { volume } = e.detail;
+    let finalVolume = volume;
+
+    if (this.role === ROLES.CHILD) {
+      finalVolume = Math.min(volume, CHILD_VOLUME_LIMIT);
+    }
+
+    if (this.muted && finalVolume > 0) {
+      this.muted = false;
+      this._audio.muted = false;
+    }
+    this._audio.volume = finalVolume;
+  }
+
+  _onVolumeChangeEnd(e) {
+    let { volume } = e.detail;
+
+    if (this.role === ROLES.CHILD) {
+      volume = Math.min(volume, CHILD_VOLUME_LIMIT);
+    }
+
+    this.volume = volume;
+    if (volume > 0) {
+      this.muted = false;
+    }
+    setVolume(volume);
+    setMuted(this.muted);
+  }
+
+  async _openMonthlyReport() {
+    const now = new Date();
+    const report = await getMonthlyReport(now.getFullYear(), now.getMonth());
+    this.monthlyReportData = report;
+    this.showMonthlyReport = true;
+  }
+
+  _closeMonthlyReport() {
+    this.showMonthlyReport = false;
+  }
+
+  _recordPlayHistory(completed) {
+    if (!this.currentSong || this._lastPlayStartTime <= 0) return;
+
+    const playDuration = (Date.now() - this._lastPlayStartTime) / 1000;
+    if (playDuration < 5) return;
+
+    const entry = {
+      songId: this.currentSong.id,
+      title: this.currentSong.title,
+      artist: this.currentSong.artist,
+      album: this.currentSong.album,
+      duration: Math.min(playDuration, this.duration || playDuration),
+      completed,
+      volume: this.volume,
+      timestamp: this._lastPlayStartTime
+    };
+
+    storage.addHistoryEntry(entry);
+  }
+
+  async _checkMonthlyReport() {
+    const now = new Date();
+    const lastMonthEnd = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59).getTime();
+    const lastShown = getLastMonthlyReport();
+
+    if (lastShown < lastMonthEnd && now.getDate() <= 3) {
+      const report = await getMonthlyReport(now.getFullYear(), now.getMonth() - 1);
+      if (report.totalPlays > 0) {
+        this.monthlyReportData = report;
+        this.showMonthlyReport = true;
+        setLastMonthlyReport(now.getTime());
+      }
+    }
   }
 }
 
